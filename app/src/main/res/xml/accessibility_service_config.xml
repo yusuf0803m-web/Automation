@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    canRetrieveWindowContent is required to read the ChatGPT node tree.
+    flagRetrieveInteractiveWindows lets the service see the active window even
+    when the composer is hosted in a separate window.
+
+    accessibilityEventTypes is deliberately narrow: window state changes,
+    content changes, text changes and clicks. That is enough for an
+    event-driven workflow and avoids the cost of reacting to everything.
+
+    packageNames is intentionally NOT restricted here, because the service must
+    be able to tell that some *other* app is in the foreground in order to stop
+    automating. The target package is filtered in code and is user-configurable.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewTextChanged|typeViewClicked"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="200"
+    android:settingsActivity="com.pelita.autocontinue.MainActivity" />

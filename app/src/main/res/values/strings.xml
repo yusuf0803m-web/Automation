@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Pelita Auto Continue</string>
+    <string name="accessibility_service_label">Pelita Auto Continue</string>
+    <string name="accessibility_service_description">Membaca status UI ChatGPT (tombol kirim, tombol stop generating, dan kolom input) untuk mendeteksi kapan ChatGPT selesai menjawab, lalu mengetikkan dan mengirim pesan lanjutan. Isi percakapan tidak dibaca, disimpan, atau dikirim ke mana pun.</string>
+    <string name="notification_channel_name">Automation status</string>
+    <string name="notification_channel_description">Menampilkan status automation dan tombol PAUSE / STOP.</string>
+    <string name="action_pause">PAUSE</string>
+    <string name="action_stop">STOP</string>
+</resources>
