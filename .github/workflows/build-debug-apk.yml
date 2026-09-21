@@ -36,20 +36,34 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Set up the Android SDK command line tools
-        # Installs sdkmanager and exports ANDROID_HOME / ANDROID_SDK_ROOT.
-        uses: android-actions/setup-android@v3
+      - name: Locate the Android SDK
+        # The runner image already ships the Android SDK and sets ANDROID_HOME,
+        # so no third-party setup action is needed. android-actions/setup-android
+        # was used here before and failed: its default package list includes the
+        # obsolete "tools" package, which no longer exists in the SDK repository
+        # ("Warning: Failed to find package 'tools'").
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_HOME:-}" ]; then
+            echo "ANDROID_HOME is not set on this runner image." >&2
+            exit 1
+          fi
+          # Prefer cmdline-tools/latest when present, else the highest version.
+          SDKMANAGER="$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort | tail -n 1)"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "sdkmanager   =$SDKMANAGER"
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
 
       - name: Accept Android SDK licenses
         # Non-interactive. A fixed run of "y" lines is used rather than `yes`:
         # it fits in the pipe buffer and exits 0, so this cannot fail on
         # SIGPIPE if the shell is ever switched to one with `pipefail` set.
-        run: printf 'y\n%.0s' $(seq 100) | sdkmanager --licenses > /dev/null
+        run: printf 'y\n%.0s' $(seq 100) | "$SDKMANAGER" --licenses > /dev/null
 
       - name: Install the Android SDK packages this build needs
         # compileSdk = 35 and AGP 8.7.3, per app/build.gradle.kts.
         run: |
-          sdkmanager --install \
+          "$SDKMANAGER" --install \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
