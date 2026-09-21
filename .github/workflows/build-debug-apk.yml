@@ -1,0 +1,85 @@
+# Builds the Pelita Auto Continue debug APK on CI.
+#
+# This exists because the Android Gradle Plugin, AndroidX and the Android SDK
+# all live on Google's Maven repository, which is not reachable from every
+# development environment. GitHub's runners can reach it, so the APK is built
+# here instead.
+#
+# Manual trigger only for now: this does not run on push.
+
+name: Build debug APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test core and assemble debug APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up the Android SDK command line tools
+        # Installs sdkmanager and exports ANDROID_HOME / ANDROID_SDK_ROOT.
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses
+        # Non-interactive. A fixed run of "y" lines is used rather than `yes`:
+        # it fits in the pipe buffer and exits 0, so this cannot fail on
+        # SIGPIPE if the shell is ever switched to one with `pipefail` set.
+        run: printf 'y\n%.0s' $(seq 100) | sdkmanager --licenses > /dev/null
+
+      - name: Install the Android SDK packages this build needs
+        # compileSdk = 35 and AGP 8.7.3, per app/build.gradle.kts.
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Make the Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Run the core unit tests
+        run: ./gradlew :core:test --no-daemon --stacktrace
+
+      - name: Assemble the debug APK
+        # -PincludeApp=true makes settings.gradle.kts include the :app module.
+        # ANDROID_HOME alone would already do it on this runner; passing the
+        # flag keeps the step correct regardless of the runner image.
+        run: ./gradlew :app:assembleDebug -PincludeApp=true --no-daemon --stacktrace
+
+      - name: Upload the debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: pelita-auto-continue-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload the core test reports
+        # Runs even when the tests failed - that is when the report is most
+        # useful. It does not resurrect a failed job.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pelita-auto-continue-core-test-reports
+          path: |
+            core/build/reports/tests/test
+            core/build/test-results/test
+          if-no-files-found: ignore
+          retention-days: 30
