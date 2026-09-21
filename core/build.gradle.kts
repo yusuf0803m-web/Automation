@@ -1,5 +1,5 @@
 plugins {
-    kotlin("jvm")
+    kotlin("jvm") version "2.0.21"
 }
 
 // Target JVM 17 (what the Android toolchain uses) rather than pinning a

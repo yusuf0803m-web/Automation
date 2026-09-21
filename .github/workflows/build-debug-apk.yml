@@ -87,25 +87,6 @@ jobs:
           ./gradlew :app:assembleDebug -PincludeApp=true --no-daemon --console=plain 2>&1 \
             | tee assemble.log
 
-      - name: Summarise the Gradle failure
-        # Gradle's own output is thousands of lines; this pulls out just the
-        # compiler errors and the "What went wrong" block so a failed run can
-        # be diagnosed from the step summary alone.
-        if: failure()
-        shell: bash
-        run: |
-          for log in core-test.log assemble.log; do
-            [ -f "$log" ] || continue
-            echo "### $log" >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            grep -nE '^(e: |w: |FAILURE:|\* What went wrong|\* Where|\* Try|Caused by:|> )' "$log" \
-              | head -60 >> "$GITHUB_STEP_SUMMARY" || true
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            echo "===== $log ====="
-            grep -nE '^(e: |w: |FAILURE:|\* What went wrong|\* Where|\* Try|Caused by:|> )' "$log" \
-              | head -60 || true
-          done
-
       - name: Upload the raw Gradle logs
         if: failure()
         uses: actions/upload-artifact@v4
@@ -137,3 +118,25 @@ jobs:
             core/build/test-results/test
           if-no-files-found: ignore
           retention-days: 30
+
+      - name: Show why the build failed
+        # Deliberately the last step in the job: a failing Gradle run stops
+        # early, so its log is short, and putting the whole thing at the end of
+        # the job output means the cause is the last thing printed instead of
+        # being buried under the upload and cleanup steps.
+        if: failure()
+        shell: bash
+        run: |
+          for log in core-test.log assemble.log; do
+            [ -f "$log" ] || continue
+            echo "=================== $log (last 150 lines) ==================="
+            tail -n 150 "$log"
+            echo "=================== end $log ==================="
+            {
+              echo "### $log"
+              echo '```'
+              tail -n 150 "$log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+
