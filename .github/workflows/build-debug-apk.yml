@@ -72,13 +72,50 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: Run the core unit tests
-        run: ./gradlew :core:test --no-daemon --stacktrace
+        id: core_tests
+        # `shell: bash` turns on pipefail, so the tee does not mask a failure.
+        shell: bash
+        run: ./gradlew :core:test --no-daemon --console=plain 2>&1 | tee core-test.log
 
       - name: Assemble the debug APK
+        id: assemble
         # -PincludeApp=true makes settings.gradle.kts include the :app module.
         # ANDROID_HOME alone would already do it on this runner; passing the
         # flag keeps the step correct regardless of the runner image.
-        run: ./gradlew :app:assembleDebug -PincludeApp=true --no-daemon --stacktrace
+        shell: bash
+        run: |
+          ./gradlew :app:assembleDebug -PincludeApp=true --no-daemon --console=plain 2>&1 \
+            | tee assemble.log
+
+      - name: Summarise the Gradle failure
+        # Gradle's own output is thousands of lines; this pulls out just the
+        # compiler errors and the "What went wrong" block so a failed run can
+        # be diagnosed from the step summary alone.
+        if: failure()
+        shell: bash
+        run: |
+          for log in core-test.log assemble.log; do
+            [ -f "$log" ] || continue
+            echo "### $log" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            grep -nE '^(e: |w: |FAILURE:|\* What went wrong|\* Where|\* Try|Caused by:|> )' "$log" \
+              | head -60 >> "$GITHUB_STEP_SUMMARY" || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "===== $log ====="
+            grep -nE '^(e: |w: |FAILURE:|\* What went wrong|\* Where|\* Try|Caused by:|> )' "$log" \
+              | head -60 || true
+          done
+
+      - name: Upload the raw Gradle logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pelita-auto-continue-gradle-logs
+          path: |
+            core-test.log
+            assemble.log
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Upload the debug APK
         uses: actions/upload-artifact@v4

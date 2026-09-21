@@ -2,7 +2,12 @@ plugins {
     // Versions are declared here rather than in the root build script so that
     // nothing tries to resolve the Android Gradle Plugin when :app is excluded.
     id("com.android.application") version "8.7.3"
-    id("org.jetbrains.kotlin.android") version "2.0.21"
+    // No version: the root project already puts kotlin-gradle-plugin on the
+    // build classpath via `kotlin("jvm") ... apply false`, and asking for a
+    // version of a plugin that is already on the classpath is an error.
+    id("org.jetbrains.kotlin.android")
+    // A different artifact (compose-compiler-gradle-plugin), so this one does
+    // need its version here.
     id("org.jetbrains.kotlin.plugin.compose") version "2.0.21"
 }
 
