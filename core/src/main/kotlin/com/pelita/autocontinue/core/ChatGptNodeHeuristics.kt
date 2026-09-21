@@ -80,22 +80,22 @@ object ChatGptNodeHeuristics {
      */
     fun snapshotOf(
         foregroundPackage: String?,
-        isTargetForeground: Boolean,
+        targetForeground: Presence,
         nodes: List<NodeDescriptor>,
         capturedAtMs: Long,
         treeReadable: Boolean = true,
     ): UiSnapshot {
-        if (!isTargetForeground || !treeReadable) {
+        if (targetForeground != Presence.FOUND || !treeReadable) {
             return UiSnapshot(
                 foregroundPackage = foregroundPackage,
-                isTargetForeground = isTargetForeground,
+                targetForeground = targetForeground,
                 capturedAtMs = capturedAtMs,
             )
         }
         val input = nodes.firstOrNull(::isInputField)
         return UiSnapshot(
             foregroundPackage = foregroundPackage,
-            isTargetForeground = true,
+            targetForeground = Presence.FOUND,
             inputField = presenceOf(input != null),
             sendButton = presenceOf(nodes.any(::isSendButton)),
             stopGeneratingButton = presenceOf(nodes.any(::isStopGeneratingButton)),

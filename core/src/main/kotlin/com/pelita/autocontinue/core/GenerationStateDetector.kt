@@ -33,8 +33,17 @@ object GenerationStateDetector : GenerationDetector {
         if (snapshot.stopGeneratingButton == Presence.UNKNOWN) return GenerationState.UNKNOWN
         if (snapshot.generatingIndicator == Presence.UNKNOWN) return GenerationState.UNKNOWN
 
-        val idleUiReady =
-            snapshot.sendButton == Presence.FOUND && snapshot.inputField == Presence.FOUND
-        return if (idleUiReady) GenerationState.FINISHED else GenerationState.UNKNOWN
+        // The composer being present is the signal that the turn is over.
+        //
+        // The send button is deliberately NOT required: the ChatGPT app hides
+        // it while the composer is empty and shows a microphone / voice button
+        // instead, so requiring it made FINISHED unreachable between responses.
+        // The two direct signals above (no stop button, no spinner), plus the
+        // stability debounce, are what rule out an in-flight response.
+        return if (snapshot.inputField == Presence.FOUND) {
+            GenerationState.FINISHED
+        } else {
+            GenerationState.UNKNOWN
+        }
     }
 }

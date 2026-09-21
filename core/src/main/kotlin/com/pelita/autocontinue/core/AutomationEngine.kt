@@ -59,6 +59,8 @@ class AutomationEngine(
     private var attempts: Int = 0
     private var signatureAtSend: String? = null
     private var searchHintLogged: Boolean = false
+    private var foregroundLostSinceMs: Long? = null
+    private var lastAttemptAtMs: Long = 0L
     private var pausedFrom: AutomationState = AutomationState.WAITING_FOR_CHATGPT
 
     /** True once a message has been sent for the current cycle. */
@@ -106,6 +108,8 @@ class AutomationEngine(
         attempts = 0
         sentForCycleId = null
         searchHintLogged = false
+        foregroundLostSinceMs = null
+        lastAttemptAtMs = 0L
         finishedDebouncer.reset()
         cancelCountdown()
         log(effects, "Automation started (MODE B - wait for response)")
@@ -188,17 +192,34 @@ class AutomationEngine(
         }
         if (!accessibilityConnected) return
 
-        // CASE E: ChatGPT left the foreground (closed, crashed, switched away).
-        if (!snapshot.isTargetForeground) {
-            lastGenerationState = GenerationState.UNKNOWN
-            finishedDebouncer.reset()
-            cancelCountdown()
-            if (state != AutomationState.WAITING_FOR_CHATGPT) {
-                val pkg = snapshot.foregroundPackage ?: "unknown"
-                log(effects, "ChatGPT not in foreground ($pkg)")
-                transition(AutomationState.WAITING_FOR_CHATGPT, now, effects)
+        when (snapshot.targetForeground) {
+            // The window could not be read, or only a system overlay (status
+            // bar, keyboard) was visible. That is not evidence that the user
+            // left ChatGPT, so hold position. Reporting UNKNOWN freezes any
+            // running countdown without cancelling it.
+            Presence.UNKNOWN -> {
+                lastGenerationState = GenerationState.UNKNOWN
+                finishedDebouncer.reset()
+                return
             }
-            return
+
+            // CASE E: another app is confirmed in front. Debounced, because a
+            // single frame is not enough to abandon the workflow.
+            Presence.NOT_FOUND -> {
+                lastGenerationState = GenerationState.UNKNOWN
+                finishedDebouncer.reset()
+                val since = foregroundLostSinceMs ?: now.also { foregroundLostSinceMs = it }
+                if (now - since < config.foregroundLostDebounceMs) return
+                cancelCountdown()
+                if (state != AutomationState.WAITING_FOR_CHATGPT) {
+                    val pkg = snapshot.foregroundPackage ?: "unknown"
+                    log(effects, "ChatGPT not in foreground ($pkg)")
+                    transition(AutomationState.WAITING_FOR_CHATGPT, now, effects)
+                }
+                return
+            }
+
+            Presence.FOUND -> foregroundLostSinceMs = null
         }
 
         val raw = detector.detect(snapshot)
@@ -292,11 +313,17 @@ class AutomationEngine(
             AutomationState.FILLING_INPUT ->
                 if (now - stateEnteredAtMs >= config.inputTimeoutMs) {
                     fail(now, effects, "Timed out looking for the input field")
+                } else {
+                    retryAfterDelay(now, effects, "input") {
+                        AutomationEffect.FillInput(config.message)
+                    }
                 }
 
             AutomationState.SENDING ->
                 if (now - stateEnteredAtMs >= config.sendTimeoutMs) {
                     fail(now, effects, "Timed out looking for the send button")
+                } else {
+                    retryAfterDelay(now, effects, "send") { AutomationEffect.ClickSend }
                 }
 
             AutomationState.WAITING_FOR_NEXT_RESPONSE ->
@@ -375,6 +402,7 @@ class AutomationEngine(
         }
 
         attempts = 0
+        lastAttemptAtMs = now
         log(effects, "Input found - typing \"${config.message}\"")
         transition(AutomationState.FILLING_INPUT, now, effects)
         effects += AutomationEffect.FillInput(config.message)
@@ -388,18 +416,19 @@ class AutomationEngine(
         if (state != AutomationState.FILLING_INPUT) return
         if (success) {
             attempts = 0
+            lastAttemptAtMs = now
             log(effects, "Send clicked")
             transition(AutomationState.SENDING, now, effects)
             effects += AutomationEffect.ClickSend
             return
         }
         attempts++
+        lastAttemptAtMs = now
         if (attempts >= config.maxRetries) {
             fail(now, effects, "Could not fill the input after ${config.maxRetries} attempts")
-        } else {
-            log(effects, "Retrying input (${attempts + 1}/${config.maxRetries})")
-            effects += AutomationEffect.FillInput(config.message)
         }
+        // Otherwise stay put: the retry is issued from onTick once
+        // config.retryDelayMs has passed, so the UI gets time to settle.
     }
 
     private fun onSendResult(
@@ -418,17 +447,34 @@ class AutomationEngine(
             return
         }
         attempts++
+        lastAttemptAtMs = now
         if (attempts >= config.maxRetries) {
             fail(now, effects, "Could not click send after ${config.maxRetries} attempts")
-        } else {
-            log(effects, "Retrying send (${attempts + 1}/${config.maxRetries})")
-            effects += AutomationEffect.ClickSend
         }
+        // Otherwise wait for onTick to retry, as above.
     }
 
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
+
+    /**
+     * Issues the next attempt once [AutomationConfig.retryDelayMs] has elapsed.
+     * Retrying straight away is pointless - the UI has not changed yet.
+     */
+    private fun retryAfterDelay(
+        now: Long,
+        effects: MutableList<AutomationEffect>,
+        label: String,
+        effect: () -> AutomationEffect,
+    ) {
+        if (attempts == 0) return
+        if (attempts >= config.maxRetries) return
+        if (now - lastAttemptAtMs < config.retryDelayMs) return
+        lastAttemptAtMs = now
+        log(effects, "Retrying $label (${attempts + 1}/${config.maxRetries})")
+        effects += effect()
+    }
 
     private fun fail(now: Long, effects: MutableList<AutomationEffect>, message: String) {
         cancelCountdown()

@@ -10,8 +10,18 @@ package com.pelita.autocontinue.core
 data class UiSnapshot(
     /** Package of the app currently in the foreground, or null if unreadable. */
     val foregroundPackage: String? = null,
-    /** True only when [foregroundPackage] matches the configured target package. */
-    val isTargetForeground: Boolean = false,
+    /**
+     * Whether the target app owns the foreground.
+     *
+     * FOUND     - the target package is confirmed in front.
+     * NOT_FOUND - a different app is confirmed in front.
+     * UNKNOWN   - it could not be determined: the window was unreadable, or
+     *             only a system overlay (status bar, keyboard) could be seen.
+     *
+     * The UNKNOWN case must not be treated as "the user left ChatGPT": a
+     * transient null window would otherwise cancel a running countdown.
+     */
+    val targetForeground: Presence = Presence.UNKNOWN,
     /** The message composer / prompt field. */
     val inputField: Presence = Presence.UNKNOWN,
     /** The send / submit button. */
@@ -27,15 +37,27 @@ data class UiSnapshot(
     /** Wall-clock time the snapshot was taken. */
     val capturedAtMs: Long = 0L,
 ) {
+    /** Convenience for the common "may I act?" check. */
+    val isTargetForeground: Boolean
+        get() = targetForeground == Presence.FOUND
+
     companion object {
         /**
-         * The snapshot to report when the accessibility tree cannot be read at
-         * all - everything UNKNOWN, so the engine waits.
+         * Nothing could be read - including which app is in front. Every field
+         * stays UNKNOWN, so the engine holds its position and waits.
          */
         fun unreadable(foregroundPackage: String? = null, capturedAtMs: Long = 0L): UiSnapshot =
             UiSnapshot(
                 foregroundPackage = foregroundPackage,
-                isTargetForeground = false,
+                targetForeground = Presence.UNKNOWN,
+                capturedAtMs = capturedAtMs,
+            )
+
+        /** A different app is confirmed to own the screen. */
+        fun otherAppInFront(foregroundPackage: String?, capturedAtMs: Long = 0L): UiSnapshot =
+            UiSnapshot(
+                foregroundPackage = foregroundPackage,
+                targetForeground = Presence.NOT_FOUND,
                 capturedAtMs = capturedAtMs,
             )
     }

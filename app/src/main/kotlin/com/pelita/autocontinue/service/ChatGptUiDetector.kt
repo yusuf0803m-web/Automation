@@ -1,10 +1,12 @@
 package com.pelita.autocontinue.service
 
+import android.os.Build
 import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
 import com.pelita.autocontinue.core.ChatGptNodeHeuristics
 import com.pelita.autocontinue.core.ChatGptUiPort
 import com.pelita.autocontinue.core.NodeDescriptor
+import com.pelita.autocontinue.core.Presence
 import com.pelita.autocontinue.core.UiSnapshot
 
 /**
@@ -38,19 +40,28 @@ class ChatGptUiDetector(
     override fun captureSnapshot(): UiSnapshot {
         val now = clock()
         val pkg = foregroundPackageProvider()
-        if (pkg != targetPackage) {
-            return UiSnapshot.unreadable(foregroundPackage = pkg, capturedAtMs = now)
+        return when {
+            // No readable application window. This happens routinely for a
+            // frame or two while windows change, and it is NOT evidence that
+            // the user left ChatGPT.
+            pkg == null -> UiSnapshot.unreadable(foregroundPackage = null, capturedAtMs = now)
+
+            pkg != targetPackage ->
+                UiSnapshot.otherAppInFront(foregroundPackage = pkg, capturedAtMs = now)
+
+            else -> {
+                val tree = readTree()
+                ChatGptNodeHeuristics.snapshotOf(
+                    foregroundPackage = pkg,
+                    targetForeground = Presence.FOUND,
+                    nodes = tree?.map { it.descriptor }.orEmpty(),
+                    capturedAtMs = now,
+                    // Null means the window could not be read; that is UNKNOWN,
+                    // not "nothing is there".
+                    treeReadable = tree != null,
+                )
+            }
         }
-        val tree = readTree()
-        return ChatGptNodeHeuristics.snapshotOf(
-            foregroundPackage = pkg,
-            isTargetForeground = true,
-            nodes = tree?.map { it.descriptor }.orEmpty(),
-            capturedAtMs = now,
-            // Null means the window could not be read; that is UNKNOWN, not
-            // "nothing is there".
-            treeReadable = tree != null,
-        )
     }
 
     // -----------------------------------------------------------------------
@@ -80,15 +91,38 @@ class ChatGptUiDetector(
         }
     }
 
+    /**
+     * Sends the composed message.
+     *
+     * Preference order, both node based:
+     *  1. click the send control;
+     *  2. ask the composer's IME to submit (ACTION_IME_ENTER).
+     *
+     * The fallback matters because the ChatGPT app only reveals a send control
+     * once the composer holds text, and its label can change between releases.
+     * There is still no coordinate tapping anywhere.
+     */
     override fun sendMessage(): Boolean {
         if (!isChatGptForeground()) return false
-        val button = findSendButton() ?: return false
         return try {
-            clickableSelfOrAncestor(button)?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            val button = findSendButton()
+            val clicked = button
+                ?.let { clickableSelfOrAncestor(it) }
+                ?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 ?: false
+            if (clicked) return true
+            submitViaIme()
         } catch (e: RuntimeException) {
             false
         }
+    }
+
+    private fun submitViaIme(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        val field = findInputField() ?: return false
+        return field.performAction(
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id,
+        )
     }
 
     // -----------------------------------------------------------------------

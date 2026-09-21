@@ -26,6 +26,17 @@ data class AutomationConfig(
     val chatGptSearchTimeoutMs: Long = 30_000L,
     /** Attempts per action (fill, send) before entering ERROR. */
     val maxRetries: Int = 3,
+    /**
+     * How long another app must hold the foreground before the workflow is
+     * re-armed. Without this, a status bar or keyboard window appearing for a
+     * single frame would cancel a running countdown.
+     */
+    val foregroundLostDebounceMs: Long = 1_500L,
+    /**
+     * Wait between attempts at the same action. Retrying instantly is useless:
+     * the composer and the send button need a moment to appear.
+     */
+    val retryDelayMs: Long = 600L,
     /** How long ERROR is held before retrying from WAITING_FOR_CHATGPT. */
     val errorCooldownMs: Long = 5_000L,
     /**

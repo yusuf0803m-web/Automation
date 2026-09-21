@@ -44,11 +44,11 @@ class FakeNodeTreeTest {
     private fun snapshotOf(
         nodes: List<NodeDescriptor>,
         pkg: String = AutomationConfig.DEFAULT_TARGET_PACKAGE,
-        target: Boolean = true,
+        target: Presence = Presence.FOUND,
         readable: Boolean = true,
     ): UiSnapshot = ChatGptNodeHeuristics.snapshotOf(
         foregroundPackage = pkg,
-        isTargetForeground = target,
+        targetForeground = target,
         nodes = nodes,
         capturedAtMs = 0L,
         treeReadable = readable,
@@ -123,9 +123,17 @@ class FakeNodeTreeTest {
     // CASE C ----------------------------------------------------------------
 
     @Test
-    fun `CASE C - a composer with no recognisable send button is UNKNOWN`() {
-        // ChatGPT redesigned the composer: the button no longer carries any
-        // label or id we know about.
+    fun `CASE C - an unreadable tree is UNKNOWN even with ChatGPT in front`() {
+        val snapshot = snapshotOf(emptyList(), readable = false)
+
+        assertEquals(Presence.UNKNOWN, snapshot.stopGeneratingButton)
+        assertEquals(GenerationState.UNKNOWN, GenerationStateDetector.detect(snapshot))
+    }
+
+    @Test
+    fun `a composer with no recognisable send button is still FINISHED`() {
+        // ChatGPT shows a microphone instead of a send arrow while the composer
+        // is empty, so the send button must not gate the end of a response.
         val mysteryButton = NodeDescriptor(
             className = "android.view.View",
             viewId = "com.openai.chatgpt:id/unknown_widget_42",
@@ -135,25 +143,25 @@ class FakeNodeTreeTest {
 
         assertEquals(Presence.FOUND, snapshot.inputField)
         assertEquals(Presence.NOT_FOUND, snapshot.sendButton)
-        assertEquals(GenerationState.UNKNOWN, GenerationStateDetector.detect(snapshot))
+        assertEquals(GenerationState.FINISHED, GenerationStateDetector.detect(snapshot))
     }
 
     @Test
-    fun `CASE C - automation waits instead of sending when the tree is unknown`() {
+    fun `CASE C - automation waits instead of sending when the tree is unreadable`() {
         val clock = FakeClock()
         val engine = AutomationEngine(clock = clock)
         engine.dispatch(AutomationInput.AccessibilityConnected)
         engine.dispatch(AutomationInput.Start)
 
-        val mystery = NodeDescriptor(viewId = "id/unknown_widget_42", isClickable = true)
         val effects = mutableListOf<AutomationEffect>()
         repeat(120) {
             clock.advance(500L)
             val snapshot = ChatGptNodeHeuristics.snapshotOf(
                 foregroundPackage = AutomationConfig.DEFAULT_TARGET_PACKAGE,
-                isTargetForeground = true,
-                nodes = listOf(composer, mystery),
+                targetForeground = Presence.FOUND,
+                nodes = emptyList(),
                 capturedAtMs = clock.now,
+                treeReadable = false,
             )
             effects += engine.dispatch(AutomationInput.Snapshot(snapshot))
             effects += engine.dispatch(AutomationInput.Tick)
@@ -178,7 +186,7 @@ class FakeNodeTreeTest {
         val snapshot = snapshotOf(
             listOf(composer, sendButton),
             pkg = "com.android.launcher",
-            target = false,
+            target = Presence.NOT_FOUND,
         )
         assertEquals(Presence.UNKNOWN, snapshot.sendButton)
         assertEquals(GenerationState.UNKNOWN, GenerationStateDetector.detect(snapshot))
@@ -267,7 +275,7 @@ class FakeNodeTreeTest {
         fun feed(nodes: List<NodeDescriptor>): List<AutomationEffect> {
             val snapshot = ChatGptNodeHeuristics.snapshotOf(
                 foregroundPackage = AutomationConfig.DEFAULT_TARGET_PACKAGE,
-                isTargetForeground = true,
+                targetForeground = Presence.FOUND,
                 nodes = nodes,
                 capturedAtMs = clock.now,
             )

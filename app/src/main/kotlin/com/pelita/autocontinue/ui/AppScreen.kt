@@ -353,9 +353,11 @@ private fun DebugTab(
         item { Button(onClick = onRefresh) { Text("REFRESH") } }
 
         item { DebugRow("Package", snapshot?.foregroundPackage ?: "-") }
-        item { DebugRow("ChatGPT foreground", yesNo(snapshot?.isTargetForeground)) }
+        item { DebugRow("ChatGPT foreground", snapshot?.targetForeground.label()) }
         item { DebugRow("Input", snapshot?.inputField.label()) }
-        item { DebugRow("Send", snapshot?.sendButton.label()) }
+        // NOT FOUND here is normal while the composer is empty: the ChatGPT app
+        // shows a microphone until there is text to send.
+        item { DebugRow("Send (empty = normal)", snapshot?.sendButton.label()) }
         item { DebugRow("Stop generating", snapshot?.stopGeneratingButton.label()) }
         item { DebugRow("Generating indicator", snapshot?.generatingIndicator.label()) }
         item { DebugRow("Input has text", snapshot?.inputHasText.label()) }
@@ -441,12 +443,6 @@ private fun UiState.isActive(): Boolean =
     automationState != AutomationState.IDLE &&
         automationState != AutomationState.STOPPED &&
         automationState != AutomationState.ERROR
-
-private fun yesNo(value: Boolean?): String = when (value) {
-    true -> "YES"
-    false -> "NO"
-    null -> "UNKNOWN"
-}
 
 private fun Presence?.label(): String = when (this) {
     Presence.FOUND -> "FOUND"

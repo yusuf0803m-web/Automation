@@ -359,11 +359,32 @@ class AutomationEngineTest {
 
         var fills = 0
         repeat(5) {
-            val out = e.dispatch(AutomationInput.InputFillResult(success = false))
-            fills += out.count { it is AutomationEffect.FillInput }
+            val failed = e.dispatch(AutomationInput.InputFillResult(success = false))
+            fills += failed.count { it is AutomationEffect.FillInput }
+            clock.advance(config.retryDelayMs + 50L)
+            fills += e.dispatch(AutomationInput.Tick).count { it is AutomationEffect.FillInput }
         }
         assertEquals(AutomationState.ERROR, e.state)
-        assertTrue(fills <= config.maxRetries, "retries must be bounded")
+        assertTrue(fills <= config.maxRetries, "retries must be bounded, got $fills")
+    }
+
+    @Test
+    fun `11e - a failed attempt is not retried instantly`() {
+        // Retrying in the same millisecond burns every attempt before the UI
+        // has had any chance to change.
+        val config = AutomationConfig()
+        val (e, clock) = engine(config = config)
+        runToSend(e, clock, config)
+
+        val immediate = e.dispatch(AutomationInput.InputFillResult(success = false))
+        assertFalse(immediate.hasFillInput(), "must not retry in the same instant")
+
+        val tooSoon = e.dispatch(AutomationInput.Tick)
+        assertFalse(tooSoon.hasFillInput(), "must not retry before the retry delay")
+
+        clock.advance(config.retryDelayMs + 50L)
+        val later = e.dispatch(AutomationInput.Tick)
+        assertTrue(later.hasFillInput(), "must retry once the delay has passed")
     }
 
     @Test
@@ -408,6 +429,29 @@ class AutomationEngineTest {
 
     @Test
     fun `13 - CASE E - ChatGPT leaving the foreground returns to WAITING_FOR_CHATGPT`() {
+        val config = AutomationConfig()
+        val (e, clock) = engine(config = config)
+        e.dispatch(AutomationInput.Start)
+        e.dispatch(AutomationInput.Snapshot(FakeUi.generating(clock.now)))
+        clock.advance(2_000L)
+        e.feedStableFinished(clock)
+        assertEquals(AutomationState.POST_RESPONSE_DELAY, e.state)
+
+        // The user really did switch away: another app holds the foreground
+        // for longer than the debounce window.
+        repeat(8) {
+            clock.advance(500L)
+            e.dispatch(AutomationInput.Snapshot(FakeUi.otherApp(clock.now)))
+            e.dispatch(AutomationInput.Tick)
+        }
+        assertEquals(AutomationState.WAITING_FOR_CHATGPT, e.state)
+        assertEquals(0, e.countdownSecondsRemaining)
+    }
+
+    @Test
+    fun `13c - one stray system-UI frame does not cancel a running countdown`() {
+        // The status bar, notification shade or keyboard taking focus for a
+        // frame is not the user leaving ChatGPT.
         val (e, clock) = engine()
         e.dispatch(AutomationInput.Start)
         e.dispatch(AutomationInput.Snapshot(FakeUi.generating(clock.now)))
@@ -416,9 +460,69 @@ class AutomationEngineTest {
         assertEquals(AutomationState.POST_RESPONSE_DELAY, e.state)
 
         clock.advance(500L)
-        e.dispatch(AutomationInput.Snapshot(FakeUi.otherApp(clock.now)))
-        assertEquals(AutomationState.WAITING_FOR_CHATGPT, e.state)
-        assertEquals(0, e.countdownSecondsRemaining)
+        e.dispatch(AutomationInput.Snapshot(FakeUi.otherApp(clock.now, "com.android.systemui")))
+        assertEquals(AutomationState.POST_RESPONSE_DELAY, e.state)
+
+        // ChatGPT is back on the very next reading, so the workflow continues.
+        clock.advance(500L)
+        e.dispatch(AutomationInput.Snapshot(FakeUi.finished(clock.now)))
+        assertEquals(AutomationState.POST_RESPONSE_DELAY, e.state)
+    }
+
+    @Test
+    fun `13d - an unreadable window never counts as leaving ChatGPT`() {
+        val (e, clock) = engine()
+        e.dispatch(AutomationInput.Start)
+        e.dispatch(AutomationInput.Snapshot(FakeUi.generating(clock.now)))
+        clock.advance(2_000L)
+        e.feedStableFinished(clock)
+        assertEquals(AutomationState.POST_RESPONSE_DELAY, e.state)
+
+        // A null window root, however long it lasts, only ever means "wait".
+        repeat(40) {
+            clock.advance(500L)
+            e.dispatch(AutomationInput.Snapshot(FakeUi.unreadable(clock.now)))
+            e.dispatch(AutomationInput.Tick)
+        }
+        assertEquals(AutomationState.POST_RESPONSE_DELAY, e.state)
+
+        // And the countdown resumes from where it froze, rather than restarting.
+        val resumed = mutableListOf<AutomationEffect>()
+        repeat(26) {
+            clock.advance(500L)
+            resumed += e.dispatch(AutomationInput.Snapshot(FakeUi.finished(clock.now)))
+            resumed += e.dispatch(AutomationInput.Tick)
+        }
+        assertTrue(resumed.hasFillInput(), "the workflow must continue after the UI is readable")
+    }
+
+    @Test
+    fun `13e - a full generate then finish cycle survives system-UI interruptions`() {
+        // Reproduces the device log: status bar and unreadable frames arriving
+        // in the middle of a generation used to reset the cycle repeatedly.
+        val (e, clock) = engine()
+        e.dispatch(AutomationInput.Start)
+
+        repeat(10) {
+            clock.advance(500L)
+            e.dispatch(AutomationInput.Snapshot(FakeUi.generating(clock.now)))
+            if (it % 3 == 0) {
+                clock.advance(200L)
+                e.dispatch(AutomationInput.Snapshot(FakeUi.unreadable(clock.now)))
+            }
+            e.dispatch(AutomationInput.Tick)
+        }
+        val cycleAfterGenerating = e.responseCycleId
+        assertEquals(1L, cycleAfterGenerating, "interruptions must not invent new cycles")
+
+        val effects = mutableListOf<AutomationEffect>()
+        repeat(40) {
+            clock.advance(500L)
+            effects += e.dispatch(AutomationInput.Snapshot(FakeUi.finished(clock.now)))
+            effects += e.dispatch(AutomationInput.Tick)
+        }
+        assertTrue(effects.hasFillInput(), "must type once the response really finished")
+        assertEquals(1, effects.count { it is AutomationEffect.FillInput })
     }
 
     @Test
@@ -525,6 +629,8 @@ class AutomationEngineTest {
         e.dispatch(AutomationInput.InputFillResult(success = true))
         e.dispatch(AutomationInput.SendResult(success = false))
         assertEquals(AutomationState.SENDING, e.state)
+        clock.advance(config.retryDelayMs + 50L)
+        assertTrue(e.dispatch(AutomationInput.Tick).hasClickSend(), "send is retried after a delay")
         e.dispatch(AutomationInput.SendResult(success = false))
         assertEquals(AutomationState.ERROR, e.state)
     }

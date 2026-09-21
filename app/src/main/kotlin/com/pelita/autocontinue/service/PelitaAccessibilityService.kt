@@ -7,6 +7,8 @@ import android.os.Looper
 import android.provider.Settings
 import android.text.TextUtils
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import com.pelita.autocontinue.data.SettingsStore
 
 /**
@@ -45,8 +47,8 @@ class PelitaAccessibilityService : AccessibilityService() {
         settings = SettingsStore(this)
 
         detector = ChatGptUiDetector(
-            rootProvider = { rootInActiveWindow },
-            foregroundPackageProvider = { rootInActiveWindow?.packageName?.toString() },
+            rootProvider = { applicationWindowRoot() },
+            foregroundPackageProvider = { applicationWindowRoot()?.packageName?.toString() },
             targetPackage = settings.targetPackage,
         )
         AutomationController.ui = detector
@@ -88,6 +90,30 @@ class PelitaAccessibilityService : AccessibilityService() {
         AutomationController.ui = null
         AutomationController.onServiceDisconnected()
         super.onDestroy()
+    }
+
+    /**
+     * The root of the active *application* window.
+     *
+     * `rootInActiveWindow` alone is not good enough: when the status bar,
+     * notification shade, volume panel or keyboard takes focus it reports
+     * `com.android.systemui` or the IME package, and it returns null outright
+     * while windows are changing. Both were being read as "the user left
+     * ChatGPT", which cancelled countdowns mid-flow.
+     *
+     * Filtering to TYPE_APPLICATION windows ignores those overlays, so ChatGPT
+     * stays the foreground app while its own window is still on top.
+     */
+    private fun applicationWindowRoot(): AccessibilityNodeInfo? = try {
+        val appWindows = windows.orEmpty()
+            .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+        val active = appWindows.firstOrNull { it.isActive }
+            ?: appWindows.firstOrNull { it.isFocused }
+            ?: appWindows.firstOrNull()
+        active?.root ?: rootInActiveWindow
+    } catch (e: RuntimeException) {
+        // Windows can be recycled underneath us mid-transition.
+        null
     }
 
     /**

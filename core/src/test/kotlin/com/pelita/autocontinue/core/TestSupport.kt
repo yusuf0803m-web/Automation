@@ -21,7 +21,7 @@ object FakeUi {
     /** ChatGPT is streaming a response: stop button visible, send hidden. */
     fun generating(now: Long = 0L, signature: String? = "sig-0"): UiSnapshot = UiSnapshot(
         foregroundPackage = CHATGPT,
-        isTargetForeground = true,
+        targetForeground = Presence.FOUND,
         inputField = Presence.FOUND,
         sendButton = Presence.NOT_FOUND,
         stopGeneratingButton = Presence.FOUND,
@@ -34,7 +34,7 @@ object FakeUi {
     /** ChatGPT is idle: composer and send available, nothing generating. */
     fun finished(now: Long = 0L, signature: String? = "sig-1"): UiSnapshot = UiSnapshot(
         foregroundPackage = CHATGPT,
-        isTargetForeground = true,
+        targetForeground = Presence.FOUND,
         inputField = Presence.FOUND,
         sendButton = Presence.FOUND,
         stopGeneratingButton = Presence.NOT_FOUND,
@@ -44,20 +44,26 @@ object FakeUi {
         capturedAtMs = now,
     )
 
-    /** The composer is there but the send button cannot be read. */
+    /**
+     * ChatGPT is in front but the signals that would rule out an in-flight
+     * response cannot be read, so nothing may be concluded.
+     */
     fun ambiguous(now: Long = 0L): UiSnapshot = UiSnapshot(
         foregroundPackage = CHATGPT,
-        isTargetForeground = true,
+        targetForeground = Presence.FOUND,
         inputField = Presence.FOUND,
         sendButton = Presence.UNKNOWN,
-        stopGeneratingButton = Presence.NOT_FOUND,
-        generatingIndicator = Presence.NOT_FOUND,
+        stopGeneratingButton = Presence.UNKNOWN,
+        generatingIndicator = Presence.UNKNOWN,
         capturedAtMs = now,
     )
 
-    /** Some other app owns the screen. */
+    /** Some other app is confirmed to own the screen. */
     fun otherApp(now: Long = 0L, pkg: String = "com.android.launcher"): UiSnapshot =
-        UiSnapshot.unreadable(foregroundPackage = pkg, capturedAtMs = now)
+        UiSnapshot.otherAppInFront(foregroundPackage = pkg, capturedAtMs = now)
+
+    /** The window could not be read at all - a transient, common condition. */
+    fun unreadable(now: Long = 0L): UiSnapshot = UiSnapshot.unreadable(capturedAtMs = now)
 }
 
 /** Drives an engine through a full "ChatGPT finished a response" sequence. */
