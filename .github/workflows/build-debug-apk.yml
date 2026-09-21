@@ -6,6 +6,9 @@
 # here instead.
 #
 # Manual trigger only for now: this does not run on push.
+#
+# GitHub only offers the "Run workflow" button for workflows that exist on the
+# repository's default branch, which here is claude/pelita-auto-continue-ofp646.
 
 name: Build debug APK
 
