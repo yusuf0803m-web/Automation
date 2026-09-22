@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -36,6 +37,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pelita.autocontinue.core.AutomationConfig
+import com.pelita.autocontinue.core.AutomationMode
 import com.pelita.autocontinue.core.AutomationState
 import com.pelita.autocontinue.core.GenerationState
 import com.pelita.autocontinue.core.LogEntry
@@ -56,6 +58,8 @@ fun AppScreen(
     onDelayChange: (Int) -> Unit,
     onMessageChange: (String) -> Unit,
     onTargetPackageChange: (String) -> Unit,
+    onModeChange: (AutomationMode) -> Unit,
+    onIntervalChange: (Int) -> Unit,
     onStart: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
@@ -112,6 +116,8 @@ fun AppScreen(
                     onRefreshAccessibility = onRefreshAccessibility,
                     onDelayChange = onDelayChange,
                     onMessageChange = onMessageChange,
+                    onModeChange = onModeChange,
+                    onIntervalChange = onIntervalChange,
                     onStart = onStart,
                     onPause = onPause,
                     onResume = onResume,
@@ -163,6 +169,8 @@ private fun HomeTab(
     onRefreshAccessibility: () -> Unit,
     onDelayChange: (Int) -> Unit,
     onMessageChange: (String) -> Unit,
+    onModeChange: (AutomationMode) -> Unit,
+    onIntervalChange: (Int) -> Unit,
     onStart: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
@@ -192,6 +200,15 @@ private fun HomeTab(
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold,
                         )
+                    }
+                    if (uiState.config.mode == AutomationMode.TIMED &&
+                        uiState.timedSecondsRemaining > 0 &&
+                        state != AutomationState.POST_RESPONSE_DELAY
+                    ) {
+                        Spacer(Modifier.height(8.dp))
+                        val m = uiState.timedSecondsRemaining / 60
+                        val sec = uiState.timedSecondsRemaining % 60
+                        Text("Kirim berikutnya dalam ${m}m ${sec}s")
                     }
                     if (state == AutomationState.POST_RESPONSE_DELAY) {
                         Spacer(Modifier.height(8.dp))
@@ -232,6 +249,8 @@ private fun HomeTab(
                 uiState = uiState,
                 onDelayChange = onDelayChange,
                 onMessageChange = onMessageChange,
+                onModeChange = onModeChange,
+                onIntervalChange = onIntervalChange,
             )
         }
 
@@ -277,10 +296,48 @@ private fun SettingsCard(
     uiState: UiState,
     onDelayChange: (Int) -> Unit,
     onMessageChange: (String) -> Unit,
+    onModeChange: (AutomationMode) -> Unit,
+    onIntervalChange: (Int) -> Unit,
 ) {
+    val timed = uiState.config.mode == AutomationMode.TIMED
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Settings", style = MaterialTheme.typography.labelMedium)
+            Text("Mode", style = MaterialTheme.typography.labelMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = !timed,
+                    onClick = { onModeChange(AutomationMode.WAIT_FOR_RESPONSE) },
+                    label = { Text("B - Tunggu respons") },
+                )
+                FilterChip(
+                    selected = timed,
+                    onClick = { onModeChange(AutomationMode.TIMED) },
+                    label = { Text("A - Interval") },
+                )
+            }
+            Text(
+                text = if (timed) {
+                    "Mengirim setiap interval. Dilewati jika ChatGPT terlihat masih " +
+                        "menulis. Kurang aman daripada Mode B - gunakan jika deteksi gagal."
+                } else {
+                    "Menunggu sampai respons benar-benar selesai sebelum mengirim."
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
+
+            if (timed) {
+                var minutes by remember(uiState.config.timedIntervalMinutes) {
+                    mutableFloatStateOf(uiState.config.timedIntervalMinutes.toFloat())
+                }
+                Text("Interval: ${minutes.toInt()} menit")
+                Slider(
+                    value = minutes,
+                    onValueChange = { minutes = it },
+                    onValueChangeFinished = { onIntervalChange(minutes.toInt()) },
+                    valueRange = AutomationConfig.MIN_TIMED_MINUTES.toFloat()..
+                        AutomationConfig.MAX_TIMED_MINUTES.toFloat(),
+                )
+            }
 
             // Dragging is local state; the setting is only persisted on release
             // so a drag does not write preferences on every frame.
@@ -311,7 +368,6 @@ private fun SettingsCard(
             )
 
             Text("Target: ChatGPT (${uiState.config.targetPackage})")
-            Text("Mode: MODE B - WAIT FOR RESPONSE")
         }
     }
 }

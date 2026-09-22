@@ -66,6 +66,14 @@ class MainActivity : ComponentActivity() {
                         settings.targetPackage = pkg
                         AutomationController.applyConfig(settings.toConfig())
                     },
+                    onModeChange = { mode ->
+                        settings.mode = mode
+                        AutomationController.applyConfig(settings.toConfig())
+                    },
+                    onIntervalChange = { minutes ->
+                        settings.timedIntervalMinutes = minutes
+                        AutomationController.applyConfig(settings.toConfig())
+                    },
                     onStart = {
                         PelitaForegroundService.start(activity)
                         AutomationController.start()

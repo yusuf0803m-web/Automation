@@ -2,6 +2,7 @@ package com.pelita.autocontinue.data
 
 import android.content.Context
 import com.pelita.autocontinue.core.AutomationConfig
+import com.pelita.autocontinue.core.AutomationMode
 
 /**
  * Persists the handful of user-visible settings. SharedPreferences keeps the
@@ -34,14 +35,35 @@ class SettingsStore(context: Context) {
             ?: AutomationConfig.DEFAULT_TARGET_PACKAGE
         set(value) = prefs.edit().putString(KEY_TARGET, value).apply()
 
+    var mode: AutomationMode
+        get() = runCatching {
+            AutomationMode.valueOf(prefs.getString(KEY_MODE, null) ?: MODE_DEFAULT)
+        }.getOrDefault(AutomationMode.WAIT_FOR_RESPONSE)
+        set(value) = prefs.edit().putString(KEY_MODE, value.name).apply()
+
+    var timedIntervalMinutes: Int
+        get() = prefs.getInt(KEY_INTERVAL, AutomationConfig.DEFAULT_TIMED_INTERVAL_MS.toInt() / 60_000)
+            .coerceIn(AutomationConfig.MIN_TIMED_MINUTES, AutomationConfig.MAX_TIMED_MINUTES)
+        set(value) = prefs.edit()
+            .putInt(
+                KEY_INTERVAL,
+                value.coerceIn(
+                    AutomationConfig.MIN_TIMED_MINUTES,
+                    AutomationConfig.MAX_TIMED_MINUTES,
+                ),
+            )
+            .apply()
+
     var onboardingSeen: Boolean
         get() = prefs.getBoolean(KEY_ONBOARDING, false)
         set(value) = prefs.edit().putBoolean(KEY_ONBOARDING, value).apply()
 
     fun toConfig(): AutomationConfig = AutomationConfig(
+        mode = mode,
         targetPackage = targetPackage,
         message = message,
         postResponseDelayMs = delaySeconds * 1000L,
+        timedIntervalMs = timedIntervalMinutes * 60_000L,
     )
 
     private companion object {
@@ -49,5 +71,8 @@ class SettingsStore(context: Context) {
         const val KEY_MESSAGE = "message"
         const val KEY_TARGET = "target_package"
         const val KEY_ONBOARDING = "onboarding_seen"
+        const val KEY_MODE = "mode"
+        const val KEY_INTERVAL = "timed_interval_minutes"
+        val MODE_DEFAULT: String = AutomationMode.WAIT_FOR_RESPONSE.name
     }
 }

@@ -278,8 +278,7 @@ class AutomationEngineTest {
         val effects = runToSend(e, clock, config)
         assertTrue(effects.hasFillInput())
 
-        e.dispatch(AutomationInput.InputFillResult(success = true))
-        e.dispatch(AutomationInput.SendResult(success = true))
+        e.completeSend(clock)
         assertEquals(AutomationState.WAITING_FOR_NEXT_RESPONSE, e.state)
         assertTrue(e.messageSentForCurrentResponse)
 
@@ -299,8 +298,7 @@ class AutomationEngineTest {
         val config = AutomationConfig()
         val (e, clock) = engine(config = config)
         runToSend(e, clock, config)
-        e.dispatch(AutomationInput.InputFillResult(success = true))
-        e.dispatch(AutomationInput.SendResult(success = true))
+        e.completeSend(clock)
         val firstCycle = e.responseCycleId
         assertTrue(e.messageSentForCurrentResponse)
 
@@ -316,8 +314,7 @@ class AutomationEngineTest {
         val config = AutomationConfig()
         val (e, clock) = engine(config = config)
         runToSend(e, clock, config)
-        e.dispatch(AutomationInput.InputFillResult(success = true))
-        e.dispatch(AutomationInput.SendResult(success = true))
+        e.completeSend(clock)
 
         clock.advance(1_000L)
         e.dispatch(AutomationInput.Snapshot(FakeUi.generating(clock.now)))
@@ -406,8 +403,7 @@ class AutomationEngineTest {
         val config = AutomationConfig()
         val (e, clock) = engine(config = config)
         runToSend(e, clock, config)
-        e.dispatch(AutomationInput.InputFillResult(success = true))
-        e.dispatch(AutomationInput.SendResult(success = true))
+        e.completeSend(clock)
 
         clock.advance(config.waitForNextResponseTimeoutMs + 1_000L)
         val out = e.dispatch(AutomationInput.Tick)
@@ -582,8 +578,7 @@ class AutomationEngineTest {
         val config = AutomationConfig()
         val (e, clock) = engine(config = config)
         runToSend(e, clock, config)
-        e.dispatch(AutomationInput.InputFillResult(success = true))
-        e.dispatch(AutomationInput.SendResult(success = true))
+        e.completeSend(clock)
         val firstCycle = e.responseCycleId
 
         // The next answer arrived so fast that no GENERATING frame was seen,
@@ -599,8 +594,7 @@ class AutomationEngineTest {
         val config = AutomationConfig()
         val (e, clock) = engine(config = config)
         runToSend(e, clock, config)
-        e.dispatch(AutomationInput.InputFillResult(success = true))
-        e.dispatch(AutomationInput.SendResult(success = true))
+        e.completeSend(clock)
         val cycle = e.responseCycleId
 
         clock.advance(1_000L)
@@ -612,27 +606,120 @@ class AutomationEngineTest {
     // Send path -------------------------------------------------------------
 
     @Test
-    fun `a successful fill is followed by exactly one send click`() {
+    fun `the send button is not clicked in the same instant as typing`() {
+        // The ChatGPT app only reveals its send control once the composer holds
+        // text, so an immediate click lands on nothing.
         val config = AutomationConfig()
         val (e, clock) = engine(config = config)
         runToSend(e, clock, config)
+
         val out = e.dispatch(AutomationInput.InputFillResult(success = true))
         assertEquals(AutomationState.SENDING, e.state)
-        assertEquals(1, out.count { it is AutomationEffect.ClickSend })
+        assertFalse(out.hasClickSend(), "must wait for the send control to appear")
+
+        var clicks = 0
+        repeat(6) {
+            clock.advance(500L)
+            e.dispatch(AutomationInput.Snapshot(FakeUi.finished(clock.now).withComposerText()))
+            val out = e.dispatch(AutomationInput.Tick)
+            if (out.hasClickSend()) {
+                clicks++
+                e.dispatch(AutomationInput.SendResult(success = true))
+            }
+        }
+        assertEquals(1, clicks, "exactly one click while the send is unconfirmed")
     }
 
     @Test
-    fun `a failed send is retried and then reported as an error`() {
+    fun `a dispatched click is not treated as proof the message was sent`() {
+        // Reproduces the device bug: the log said "Message sent" while "Lanjut"
+        // was still sitting in the composer.
+        val config = AutomationConfig()
+        val (e, clock) = engine(config = config)
+        runToSend(e, clock, config)
+        e.dispatch(AutomationInput.InputFillResult(success = true))
+
+        repeat(4) {
+            clock.advance(500L)
+            e.dispatch(AutomationInput.Snapshot(FakeUi.finished(clock.now).withComposerText()))
+            e.dispatch(AutomationInput.Tick)
+        }
+        val out = e.dispatch(AutomationInput.SendResult(success = true))
+        assertFalse(
+            out.logs().any { it.contains("Message sent") },
+            "a click that returned true is not proof",
+        )
+        assertEquals(AutomationState.SENDING, e.state)
+
+        // The composer still holds the text, so the send is retried.
+        val retried = mutableListOf<AutomationEffect>()
+        repeat(8) {
+            clock.advance(500L)
+            retried += e.dispatch(
+                AutomationInput.Snapshot(FakeUi.finished(clock.now).withComposerText()),
+            )
+            retried += e.dispatch(AutomationInput.Tick)
+        }
+        assertTrue(retried.hasClickSend(), "an unconfirmed send must be retried")
+    }
+
+    @Test
+    fun `a send is confirmed once the composer is observed to be empty`() {
+        val config = AutomationConfig()
+        val (e, clock) = engine(config = config)
+        runToSend(e, clock, config)
+        val out = e.completeSend(clock)
+
+        assertTrue(out.logs().any { it.contains("Message sent") })
+        assertEquals(AutomationState.WAITING_FOR_NEXT_RESPONSE, e.state)
+    }
+
+    @Test
+    fun `a send that never leaves the composer ends in ERROR, not a false success`() {
+        val config = AutomationConfig()
+        val (e, clock) = engine(config = config)
+        runToSend(e, clock, config)
+        e.dispatch(AutomationInput.InputFillResult(success = true))
+
+        val effects = mutableListOf<AutomationEffect>()
+        var reachedError = false
+        repeat(60) {
+            if (reachedError) return@repeat
+            clock.advance(500L)
+            effects += e.dispatch(
+                AutomationInput.Snapshot(FakeUi.finished(clock.now).withComposerText()),
+            )
+            val out = e.dispatch(AutomationInput.Tick)
+            effects += out
+            if (out.hasClickSend()) e.dispatch(AutomationInput.SendResult(success = true))
+            if (e.state == AutomationState.ERROR) reachedError = true
+        }
+        assertFalse(
+            effects.logs().any { it.contains("Message sent") },
+            "a message still in the composer was never sent",
+        )
+        assertTrue(reachedError, "an unconfirmed send must end in ERROR")
+    }
+
+    @Test
+    fun `a failed send is retried a bounded number of times and then errors`() {
         val config = AutomationConfig(maxRetries = 2)
         val (e, clock) = engine(config = config)
         runToSend(e, clock, config)
         e.dispatch(AutomationInput.InputFillResult(success = true))
-        e.dispatch(AutomationInput.SendResult(success = false))
-        assertEquals(AutomationState.SENDING, e.state)
-        clock.advance(config.retryDelayMs + 50L)
-        assertTrue(e.dispatch(AutomationInput.Tick).hasClickSend(), "send is retried after a delay")
-        e.dispatch(AutomationInput.SendResult(success = false))
+
+        var clicks = 0
+        repeat(30) {
+            if (e.state != AutomationState.SENDING) return@repeat
+            clock.advance(500L)
+            e.dispatch(AutomationInput.Snapshot(FakeUi.finished(clock.now).withComposerText()))
+            if (e.dispatch(AutomationInput.Tick).hasClickSend()) {
+                clicks++
+                e.dispatch(AutomationInput.SendResult(success = false))
+            }
+        }
         assertEquals(AutomationState.ERROR, e.state)
+        assertTrue(clicks <= config.maxRetries, "clicks must be bounded, got $clicks")
     }
 
     @Test

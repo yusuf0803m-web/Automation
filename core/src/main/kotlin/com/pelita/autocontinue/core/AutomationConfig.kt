@@ -6,6 +6,8 @@ package com.pelita.autocontinue.core
  * starts a send is an observed, stable end of generation.
  */
 data class AutomationConfig(
+    /** Which trigger decides when to send. */
+    val mode: AutomationMode = AutomationMode.WAIT_FOR_RESPONSE,
     /** Package of the app to automate. Configurable because it can change. */
     val targetPackage: String = DEFAULT_TARGET_PACKAGE,
     /** Text typed into the composer. */
@@ -37,6 +39,19 @@ data class AutomationConfig(
      * the composer and the send button need a moment to appear.
      */
     val retryDelayMs: Long = 600L,
+    /**
+     * How long to wait for the send control to appear after typing before
+     * clicking anyway. The ChatGPT app only reveals it once the composer holds
+     * text, and that takes a frame or two.
+     */
+    val sendButtonGraceMs: Long = 1_200L,
+    /**
+     * How long to wait for proof that the message actually left the composer
+     * before trying to send again.
+     */
+    val sendVerifyTimeoutMs: Long = 2_500L,
+    /** MODE A only: how often to send. */
+    val timedIntervalMs: Long = DEFAULT_TIMED_INTERVAL_MS,
     /** How long ERROR is held before retrying from WAITING_FOR_CHATGPT. */
     val errorCooldownMs: Long = 5_000L,
     /**
@@ -53,10 +68,22 @@ data class AutomationConfig(
             "postResponseDelayMs must be between $MIN_DELAY_MS and $MAX_DELAY_MS"
         }
         require(maxRetries >= 1) { "maxRetries must be at least 1" }
+        require(timedIntervalMs >= MIN_TIMED_MINUTES * 60_000L) {
+            "timedIntervalMs must be at least $MIN_TIMED_MINUTES minute"
+        }
     }
 
     val postResponseDelaySeconds: Int
         get() = (postResponseDelayMs / 1000L).toInt()
+
+    val timedIntervalMinutes: Int
+        get() = (timedIntervalMs / 60_000L).toInt()
+
+    fun withTimedIntervalMinutes(minutes: Int): AutomationConfig =
+        copy(
+            timedIntervalMs =
+                minutes.coerceIn(MIN_TIMED_MINUTES, MAX_TIMED_MINUTES) * 60_000L,
+        )
 
     fun withDelaySeconds(seconds: Int): AutomationConfig =
         copy(postResponseDelayMs = seconds.coerceIn(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS) * 1000L)
@@ -77,5 +104,9 @@ data class AutomationConfig(
         const val MIN_DELAY_MS = MIN_DELAY_SECONDS * 1000L
         const val MAX_DELAY_MS = MAX_DELAY_SECONDS * 1000L
         const val DEFAULT_POST_RESPONSE_DELAY_MS = 10_000L
+
+        const val MIN_TIMED_MINUTES = 1
+        const val MAX_TIMED_MINUTES = 30
+        const val DEFAULT_TIMED_INTERVAL_MS = 3 * 60_000L
     }
 }

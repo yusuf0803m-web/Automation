@@ -47,8 +47,8 @@ class PelitaAccessibilityService : AccessibilityService() {
         settings = SettingsStore(this)
 
         detector = ChatGptUiDetector(
-            rootProvider = { applicationWindowRoot() },
-            foregroundPackageProvider = { applicationWindowRoot()?.packageName?.toString() },
+            rootProvider = { targetWindowRoot() },
+            foregroundPackageProvider = { targetWindowRoot()?.packageName?.toString() },
             targetPackage = settings.targetPackage,
         )
         AutomationController.ui = detector
@@ -93,24 +93,33 @@ class PelitaAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * The root of the active *application* window.
+     * The root of the target app's own window, if it is on screen at all.
      *
-     * `rootInActiveWindow` alone is not good enough: when the status bar,
-     * notification shade, volume panel or keyboard takes focus it reports
-     * `com.android.systemui` or the IME package, and it returns null outright
-     * while windows are changing. Both were being read as "the user left
-     * ChatGPT", which cancelled countdowns mid-flow.
+     * Looking for *the active window* is wrong for two reasons seen on a real
+     * device:
      *
-     * Filtering to TYPE_APPLICATION windows ignores those overlays, so ChatGPT
-     * stays the foreground app while its own window is still on top.
+     *  - when the status bar, notification shade, volume panel or keyboard
+     *    takes focus, the active window belongs to `com.android.systemui` or
+     *    the IME, and `rootInActiveWindow` can return null outright while
+     *    windows change;
+     *  - in split screen both apps are genuinely visible, and touching this
+     *    app made *it* the active window, so ChatGPT looked closed.
+     *
+     * So the target app is searched for by package among the application
+     * windows. If its window is on screen, it counts as foreground - which is
+     * exactly what the user sees. Only when no such window exists does the
+     * active application window decide what is in front instead.
      */
-    private fun applicationWindowRoot(): AccessibilityNodeInfo? = try {
+    private fun targetWindowRoot(): AccessibilityNodeInfo? = try {
         val appWindows = windows.orEmpty()
             .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
-        val active = appWindows.firstOrNull { it.isActive }
-            ?: appWindows.firstOrNull { it.isFocused }
-            ?: appWindows.firstOrNull()
-        active?.root ?: rootInActiveWindow
+        val target = appWindows.firstOrNull { window ->
+            window.root?.packageName?.toString() == settings.targetPackage
+        }
+        target?.root
+            ?: appWindows.firstOrNull { it.isActive }?.root
+            ?: appWindows.firstOrNull()?.root
+            ?: rootInActiveWindow
     } catch (e: RuntimeException) {
         // Windows can be recycled underneath us mid-transition.
         null

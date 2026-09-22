@@ -61,7 +61,19 @@ class AutomationEngine(
     private var searchHintLogged: Boolean = false
     private var foregroundLostSinceMs: Long? = null
     private var lastAttemptAtMs: Long = 0L
+    /** When the send control was last activated, or 0 if not yet this round. */
+    private var sendClickedAtMs: Long = 0L
+    /** MODE A only: when the last timed send completed. */
+    private var lastTimedSendAtMs: Long = 0L
     private var pausedFrom: AutomationState = AutomationState.WAITING_FOR_CHATGPT
+
+    /** MODE A only: seconds until the next timed send, for the UI. */
+    fun secondsUntilTimedSend(): Int {
+        if (config.mode != AutomationMode.TIMED || !isRunning) return 0
+        if (lastTimedSendAtMs == 0L) return config.timedIntervalMs.toInt() / 1000
+        val remaining = config.timedIntervalMs - (clock.nowMs() - lastTimedSendAtMs)
+        return ((remaining + 999L) / 1000L).toInt().coerceAtLeast(0)
+    }
 
     /** True once a message has been sent for the current cycle. */
     val messageSentForCurrentResponse: Boolean
@@ -110,6 +122,8 @@ class AutomationEngine(
         searchHintLogged = false
         foregroundLostSinceMs = null
         lastAttemptAtMs = 0L
+        sendClickedAtMs = 0L
+        lastTimedSendAtMs = 0L
         finishedDebouncer.reset()
         cancelCountdown()
         log(effects, "Automation started (MODE B - wait for response)")
@@ -225,6 +239,15 @@ class AutomationEngine(
         val raw = detector.detect(snapshot)
         lastGenerationState = raw
 
+        // A send in flight is confirmed by observation, whatever the mode.
+        if (confirmSendIfObserved(snapshot, raw, now, effects)) return
+        if (state == AutomationState.SENDING || state == AutomationState.FILLING_INPUT) return
+
+        if (config.mode == AutomationMode.TIMED) {
+            handleTimedMode(snapshot, raw, now, effects)
+            return
+        }
+
         when (raw) {
             GenerationState.GENERATING -> onGenerating(now, effects)
             GenerationState.UNKNOWN -> finishedDebouncer.reset()
@@ -235,6 +258,54 @@ class AutomationEngine(
                 }
             }
         }
+    }
+
+    /**
+     * MODE A. The interval decides when to send; the UI only gets a veto while
+     * a response is visibly in flight.
+     */
+    private fun handleTimedMode(
+        snapshot: UiSnapshot,
+        raw: GenerationState,
+        now: Long,
+        effects: MutableList<AutomationEffect>,
+    ) {
+        if (lastTimedSendAtMs == 0L) lastTimedSendAtMs = now
+
+        if (now - lastTimedSendAtMs < config.timedIntervalMs) {
+            if (raw == GenerationState.GENERATING && state != AutomationState.CHATGPT_GENERATING) {
+                beginNewResponseCycle()
+                log(effects, "Generation detected (cycle #$responseCycleId)")
+                transition(AutomationState.CHATGPT_GENERATING, now, effects)
+            } else if (raw != GenerationState.GENERATING &&
+                state != AutomationState.WAITING_FOR_NEXT_RESPONSE
+            ) {
+                transition(AutomationState.WAITING_FOR_NEXT_RESPONSE, now, effects)
+            }
+            return
+        }
+
+        // Due. The one guard kept in this mode: never cut off a response that
+        // is visibly still streaming.
+        if (snapshot.stopGeneratingButton == Presence.FOUND) {
+            if (state != AutomationState.CHATGPT_GENERATING) {
+                log(effects, "Interval due but ChatGPT is still generating - waiting")
+                transition(AutomationState.CHATGPT_GENERATING, now, effects)
+            }
+            return
+        }
+
+        if (snapshot.inputField != Presence.FOUND) {
+            // Nothing to type into yet.
+            return
+        }
+
+        attempts = 0
+        lastAttemptAtMs = now
+        sendClickedAtMs = 0L
+        log(effects, "Interval elapsed - typing \"${config.message}\"")
+        transition(AutomationState.FILLING_INPUT, now, effects)
+        effects += AutomationEffect.FillInput(config.message)
     }
 
     private fun onGenerating(now: Long, effects: MutableList<AutomationEffect>) {
@@ -319,12 +390,7 @@ class AutomationEngine(
                     }
                 }
 
-            AutomationState.SENDING ->
-                if (now - stateEnteredAtMs >= config.sendTimeoutMs) {
-                    fail(now, effects, "Timed out looking for the send button")
-                } else {
-                    retryAfterDelay(now, effects, "send") { AutomationEffect.ClickSend }
-                }
+            AutomationState.SENDING -> tickSending(now, effects)
 
             AutomationState.WAITING_FOR_NEXT_RESPONSE ->
                 if (now - stateEnteredAtMs >= config.waitForNextResponseTimeoutMs) {
@@ -417,9 +483,13 @@ class AutomationEngine(
         if (success) {
             attempts = 0
             lastAttemptAtMs = now
-            log(effects, "Send clicked")
+            sendClickedAtMs = 0L
+            log(effects, "Text entered - waiting for the send button")
+            // Deliberately no ClickSend here. The ChatGPT app only reveals its
+            // send control once the composer holds text, so clicking in the
+            // same instant hits nothing. onTick issues the click once the
+            // button is actually visible (or the grace period expires).
             transition(AutomationState.SENDING, now, effects)
-            effects += AutomationEffect.ClickSend
             return
         }
         attempts++
@@ -438,25 +508,91 @@ class AutomationEngine(
     ) {
         if (state != AutomationState.SENDING) return
         if (success) {
-            attempts = 0
-            sentForCycleId = responseCycleId
-            signatureAtSend = lastSnapshot?.lastMessageSignature
-            log(effects, "Message sent")
-            log(effects, "Waiting for next generation")
-            transition(AutomationState.WAITING_FOR_NEXT_RESPONSE, now, effects)
+            // The action was dispatched. That is NOT proof the message left the
+            // composer: a click can land on the wrong node, and an IME submit
+            // can be accepted and do nothing. Confirmation comes from watching
+            // the composer empty out, in onSnapshot.
+            sendClickedAtMs = now
+            log(effects, "Send clicked - confirming")
             return
         }
-        attempts++
         lastAttemptAtMs = now
+        sendClickedAtMs = 0L
         if (attempts >= config.maxRetries) {
             fail(now, effects, "Could not click send after ${config.maxRetries} attempts")
         }
         // Otherwise wait for onTick to retry, as above.
     }
 
+    /**
+     * Confirms a send by observation: the composer no longer holds text, or the
+     * next response has already started.
+     */
+    private fun confirmSendIfObserved(
+        snapshot: UiSnapshot,
+        raw: GenerationState,
+        now: Long,
+        effects: MutableList<AutomationEffect>,
+    ): Boolean {
+        if (state != AutomationState.SENDING || sendClickedAtMs == 0L) return false
+        val composerCleared = snapshot.inputHasText == Presence.NOT_FOUND
+        val responseStarted = raw == GenerationState.GENERATING
+        if (!composerCleared && !responseStarted) return false
+
+        attempts = 0
+        sendClickedAtMs = 0L
+        lastTimedSendAtMs = now
+        sentForCycleId = responseCycleId
+        signatureAtSend = snapshot.lastMessageSignature
+        log(effects, "Message sent")
+        log(effects, "Waiting for next generation")
+        transition(AutomationState.WAITING_FOR_NEXT_RESPONSE, now, effects)
+        return true
+    }
+
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
+
+    /**
+     * Drives the send: wait for the control to appear, click it, then wait for
+     * proof. [confirmSendIfObserved] is what ends this state on success.
+     */
+    private fun tickSending(now: Long, effects: MutableList<AutomationEffect>) {
+        if (now - stateEnteredAtMs >= config.sendTimeoutMs) {
+            fail(now, effects, "Timed out sending the message")
+            return
+        }
+        if (sendClickedAtMs != 0L) {
+            // Clicked, but the composer still holds the text.
+            if (now - sendClickedAtMs < config.sendVerifyTimeoutMs) return
+            sendClickedAtMs = 0L
+            lastAttemptAtMs = now
+            if (attempts >= config.maxRetries) {
+                fail(now, effects, "The message stayed in the composer after sending")
+            } else {
+                log(effects, "Message did not send - retrying ($attempts/${config.maxRetries})")
+            }
+            return
+        }
+        if (attempts >= config.maxRetries) {
+            fail(now, effects, "The message stayed in the composer after sending")
+            return
+        }
+        if (now - lastAttemptAtMs < config.retryDelayMs) return
+
+        // Click once the control is visible, or once the grace period is over
+        // so the platform layer can fall back to submitting via the IME.
+        val buttonVisible = lastSnapshot?.sendButton == Presence.FOUND
+        val graceOver = now - stateEnteredAtMs >= config.sendButtonGraceMs
+        if (!buttonVisible && !graceOver) return
+
+        // Counted here, not when the result comes back, so a platform layer
+        // that never reports can still never spam clicks.
+        attempts++
+        lastAttemptAtMs = now
+        effects += AutomationEffect.ClickSend
+    }
 
     /**
      * Issues the next attempt once [AutomationConfig.retryDelayMs] has elapsed.

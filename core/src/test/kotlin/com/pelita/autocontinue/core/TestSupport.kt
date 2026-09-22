@@ -82,6 +82,33 @@ fun AutomationEngine.feedStableFinished(
     return all
 }
 
+/** ChatGPT idle, but the composer still holds the text we typed. */
+fun UiSnapshot.withComposerText(): UiSnapshot = copy(inputHasText = Presence.FOUND)
+
+/**
+ * Drives a send to completion the way the real app does: the send control
+ * appears a moment after typing, the click is dispatched, and the send is only
+ * confirmed once the composer is observed to be empty.
+ */
+fun AutomationEngine.completeSend(
+    clock: FakeClock,
+    signature: String? = "sig-1",
+): List<AutomationEffect> {
+    val all = mutableListOf<AutomationEffect>()
+    all += dispatch(AutomationInput.InputFillResult(success = true))
+    repeat(6) {
+        clock.advance(500L)
+        all += dispatch(
+            AutomationInput.Snapshot(FakeUi.finished(clock.now, signature).withComposerText()),
+        )
+        all += dispatch(AutomationInput.Tick)
+    }
+    all += dispatch(AutomationInput.SendResult(success = true))
+    clock.advance(500L)
+    all += dispatch(AutomationInput.Snapshot(FakeUi.finished(clock.now, signature)))
+    return all
+}
+
 fun List<AutomationEffect>.logs(): List<String> =
     filterIsInstance<AutomationEffect.Log>().map { it.message }
 
